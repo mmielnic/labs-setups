@@ -1,0 +1,4 @@
+# Secrets / local environment
+.env
+credentials.json
+*_keys.txt
