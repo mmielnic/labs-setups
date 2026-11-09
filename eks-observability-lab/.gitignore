@@ -1,0 +1,35 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl.backup
+terraform.tfvars
+*.auto.tfvars
+kubeconfig*
+*secret*.yaml
+*credentials*
+
+# Downloaded Helm charts
+**/charts/
+
+# Generated Kubernetes manifests
+**/rendered*.yaml
+
+# Kubernetes and credentials
+kubeconfig*
+*secret*.yaml
+*credentials*
+.env
+.env.*
+
+# Terraform local state
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# macOS
+.DS_Store

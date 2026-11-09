@@ -1,0 +1,7 @@
+# Coralogix EKS Observability Lab
+# Chart: otel-integration 0.0.377
+
+global:
+  domain: us2.coralogix.com
+  clusterName: msm-tam-lab-cluster
+  deploymentEnvironmentName: aws-eks-lab

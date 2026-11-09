@@ -1,0 +1,112 @@
+﻿global:
+  domain: cx498.coralogix.com
+  clusterName: msm-tam-lab-cluster
+  deploymentEnvironmentName: aws-eks-lab
+opentelemetry-cluster-collector:
+  presets:
+    kubernetesEvents:
+      enabled: true
+    reduceResourceAttributes:
+      enabled: true
+    kubernetesResources:
+      enabled: true
+    fleetManagement:
+      enabled: true
+      supervisor:
+        enabled: false
+    resourceDetection:
+      enabled: true
+      deploymentEnvironmentName: aws-eks-lab
+    clusterMetrics:
+      enabled: true
+    collectorMetrics:
+      enabled: true
+    kubernetesApiServerMetrics:
+      enabled: true
+      scrapeAll: false
+  distribution: eks
+  provider: aws
+opentelemetry-agent:
+  presets:
+    hostEntityEvents:
+      enabled: true
+    fleetManagement:
+      enabled: true
+      supervisor:
+        enabled: false
+    spanMetrics:
+      enabled: true
+      histogramBuckets:
+      - 1ms
+      - 4ms
+      - 10ms
+      - 20ms
+      - 50ms
+      - 100ms
+      - 200ms
+      - 500ms
+      - 1s
+      - 2s
+      - 5s
+      transformStatements: []
+    profilesCollection:
+      enabled: false
+    resourceDetection:
+      enabled: true
+      deploymentEnvironmentName: aws-eks-lab
+    transactions:
+      enabled: true
+      waitDuration: 30s
+    logsCollection:
+      enabled: true
+      reduceLogAttributes:
+        enabled: true
+    kubeletMetrics:
+      enabled: true
+    collectorMetrics:
+      enabled: true
+    statsdReceiver:
+      enabled: true
+    hostMetrics:
+      enabled: true
+      process:
+        enabled: true
+    kubernetesExtraMetrics:
+      enabled: true
+      scrapeAll: false
+      perNode: true
+    reduceResourceAttributes:
+      enabled: true
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+      pipelines:
+      - logs
+      - metrics
+      - traces
+  targetAllocator:
+    enabled: false
+  distribution: eks
+  provider: aws
+opentelemetry-ebpf-profiler:
+  presets:
+    otlpExporter:
+      endpoint: ${env:K8S_NODE_IP}:4317
+      pipelines:
+      - profiles
+      tls:
+        insecure: true
+      enabled: true
+    resourceDetection:
+      enabled: true
+    fleetManagement:
+      enabled: true
+      supervisor:
+        enabled: false
+    ebpfProfiler:
+      samplesPerSecond: 20
+  enabled: false
+opentelemetry-ebpf-instrumentation:
+  enabled: true
+coralogix-operator:
+  enabled: false
