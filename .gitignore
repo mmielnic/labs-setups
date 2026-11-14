@@ -1,4 +1,41 @@
+
 # Secrets / local environment
 .env
 credentials.json
 *_keys.txt
+
+# Terraform working directories
+**/.terraform/
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Terraform plan files
+*.tfplan
+tfplan
+
+# Terraform variables (may contain secrets)
+*.tfvars
+*.tfvars.json
+
+# Terraform crash logs
+crash.log
+crash.*.log
+
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# macOS files
+.DS_Store
+
+# Local lab backups
+coralogix-labs-backup/
+
+# Additional local environment files
+.env.*
+.terraformrc
+terraform.rc
