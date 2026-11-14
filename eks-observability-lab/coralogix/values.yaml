@@ -1,112 +1,1236 @@
-﻿global:
-  domain: cx498.coralogix.com
-  clusterName: msm-tam-lab-cluster
-  deploymentEnvironmentName: aws-eks-lab
-opentelemetry-cluster-collector:
-  presets:
-    kubernetesEvents:
+global:
+  domain: "cx498.coralogix.com"
+  clusterName: "msm-tam-lab-cluster"
+  defaultApplicationName: "otel"
+  defaultSubsystemName: "integration"
+  logLevel: "info"
+  collectionInterval: "30s"
+  version: "0.0.377"
+  deploymentEnvironmentName: "aws-eks-lab"
+  extensions:
+    kubernetesDashboard:
       enabled: true
-    reduceResourceAttributes:
-      enabled: true
-    kubernetesResources:
-      enabled: true
-    fleetManagement:
-      enabled: true
-      supervisor:
-        enabled: false
-    resourceDetection:
-      enabled: true
-      deploymentEnvironmentName: aws-eks-lab
-    clusterMetrics:
-      enabled: true
-    collectorMetrics:
-      enabled: true
-    kubernetesApiServerMetrics:
-      enabled: true
-      scrapeAll: false
-  distribution: eks
-  provider: aws
-opentelemetry-agent:
-  presets:
-    hostEntityEvents:
-      enabled: true
-    fleetManagement:
-      enabled: true
-      supervisor:
-        enabled: false
-    spanMetrics:
-      enabled: true
-      histogramBuckets:
-      - 1ms
-      - 4ms
-      - 10ms
-      - 20ms
-      - 50ms
-      - 100ms
-      - 200ms
-      - 500ms
-      - 1s
-      - 2s
-      - 5s
-      transformStatements: []
-    profilesCollection:
+# Set distribution for:
+# - openshift
+# - eks/fargate
+# - gke/autopilot
+distribution: ""
+# Deploy the OpenTelemetry instrumentation webhook without requiring Instrumentation CRDs.
+# When enabled, supported application pods can be auto-instrumented by adding
+# instrumentation.opentelemetry.io/inject-java, inject-python, inject-dotnet,
+# inject-apache-httpd, or inject-nginx annotations.
+opentelemetry-autoinstrumentation:
+  enabled: false
+  # Use a stable name so webhook resources do not collide with a full operator installation.
+  nameOverride: otel-autoinstrumentation
+  # Keep CRDs disabled. This mode uses the static manager.config.instrumentations object below.
+  crds:
+    create: false
+  # cert-manager is optional. With certManager disabled, the webhook chart generates
+  # a self-signed serving certificate with Helm.
+  admissionWebhooks:
+    certManager:
       enabled: false
-    resourceDetection:
+  manager:
+    # The webhook-only mode does not install OpenTelemetryCollector CRDs.
+    ignoreMissingCollectorCRDs: true
+    config:
+      # Use the static instrumentation config below instead of reading Instrumentation CRDs.
+      enable-instrumentation-crds: false
+      # Nginx auto-instrumentation is disabled by default in the operator.
+      enable-nginx-auto-instrumentation: true
+      instrumentations:
+        spec:
+          # Common exporter endpoint. Language-specific env below can override it.
+          # Apache and nginx also use this endpoint (expanded on the attach init container).
+          exporter:
+            endpoint: http://$(OTEL_NODE_IP):4317
+          propagators:
+            - tracecontext
+            - baggage
+          sampler:
+            type: parentbased_traceidratio
+            argument: "1.0"
+          # $(OTEL_NODE_IP) sends telemetry to the agent DaemonSet on the same node as the workload pod.
+          # The operator sets OTEL_NODE_IP (status.hostIP) on every instrumented container, and on the
+          # Apache/nginx attach init container so the endpoint is expanded before the agent config is written.
+          # These environment variables are injected into all auto-instrumented pods, including
+          # SDK-only injection (instrumentation.opentelemetry.io/inject-sdk: "true").
+          # SDK-only injection uses only these common env vars plus the exporter/sampler config above,
+          # without adding init containers or language-specific agents.
+          env:
+            - name: OTEL_TRACES_SAMPLER
+              value: always_on
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          java:
+            # Image must be set explicitly because this no-CRD mode does not use CRD defaulting.
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:2.32.0
+            env:
+              - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                value: http://$(OTEL_NODE_IP):4317
+              - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                value: grpc
+          python:
+            # Python uses HTTP/protobuf on 4318; Java and .NET use gRPC on 4317.
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:0.66b1
+            env:
+              - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                value: http://$(OTEL_NODE_IP):4318
+              - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                value: http/protobuf
+          dotnet:
+            # .NET auto-instrumentation currently supports x64 runtimes.
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:1.17.0
+            env:
+              - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                value: http://$(OTEL_NODE_IP):4317
+              - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                value: grpc
+          apacheHttpd:
+            # Apache HTTPD and nginx share the same autoinstrumentation image.
+            # Supported Nginx versions: 1.22.0, 1.23.0, and 1.23.1.
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-apache-httpd:1.0.4
+          nginx:
+            # Uses the Apache HTTPD autoinstrumentation image by design.
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-apache-httpd:1.0.4
+  # Webhook manager runs only on Linux nodes.
+  nodeSelector:
+    kubernetes.io/os: linux
+opentelemetry-agent:
+  enabled: true
+  mode: daemonset
+  # provider: aws  # Cloud provider (aws, gcp, azure, on-prem). Inferred from distribution if empty.
+  fullnameOverride: coralogix-opentelemetry
+  # extraVolumes: []
+  # extraVolumeMounts: []
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+  # Extra config for the collector
+  # This is used to add extra receivers, processors, exporters, and connectors
+  # to the "logs", "metrics", and "traces" pipelines and other pipelines managed by the chart.
+  # Processors are added at the end of the pipeline before batching.
+  # You cannot use this to add new pipelines, instead use the
+  # config.service.pipelines field to add new pipelines.
+  extraConfig: {}
+  # extraConfig:
+  #   receivers:
+  #     otlp/3:
+  #       protocols:
+  #         grpc:
+  #           endpoint: ${env:MY_POD_IP}:4317
+  #         http:
+  #           endpoint: ${env:MY_POD_IP}:4318
+  #   processors:
+  #     batch: {}
+  #   exporters:
+  #     debug/2: {}
+  #   connectors:
+  #     spanmetrics/2:
+  #       metrics:
+  #         enabled: true
+  #   service:
+  #     pipelines:
+  #       logs:
+  #         receivers:
+  #         - otlp/3
+  #         processors:
+  #         - batch/2
+  #         exporters:
+  #         - debug/2
+  #       metrics:
+  #         receivers:
+  #         - otlp/3
+  #         - spanmetrics/2
+  targetAllocator:
+    enabled: false
+    replicas: 1
+    allocationStrategy: "per-node"
+    # Custom labels to add to TargetAllocator pods
+    # podLabels:
+    #   team: platform-engineering
+    #   environment: production
+    prometheusCR:
       enabled: true
-      deploymentEnvironmentName: aws-eks-lab
-    transactions:
+      # The interval at which the target allocator will scrape the Prometheus server
+      scrapeInterval: 30s
+    image:
+      repository: ghcr.io/open-telemetry/opentelemetry-operator/target-allocator
+      tag: v0.162.0
+  # serviceAccount:
+  #   # Specifies whether a service account should be created
+  #   create: true
+  #   # Annotations to add to the service account
+  #   annotations: {}
+  #   # The name of the service account to use.
+  #   # If not set and create is true, a name is generated using the fullname template
+  #   name: ""
+  clusterRole:
+    name: "coralogix-opentelemetry-agent"
+    clusterRoleBinding:
+      name: "coralogix-opentelemetry-agent"
+  # priorityClass:
+  #   # Specifies whether a priorityClass should be created.
+  #   create: false
+  #   # The name of the clusterRole to use.
+  #   # If not set a name is generated using the fullname template.
+  #   name: ""
+  #   # Sets the priority value of the priority class.
+  #   priorityValue: 1000000000
+  hostNetwork: true
+  dnsPolicy: "ClusterFirstWithHostNet"
+  presets:
+    metadata:
       enabled: true
-      waitDuration: 30s
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    k8sResourceAttributes:
+      enabled: true
+      agentType: "agent"
+    fleetManagement:
+      enabled: true
+      agentType: "agent"
+      clusterName: "{{.Values.global.clusterName}}"
+      # Custom non-identifying attributes to add to the agent description.
+      # These attributes will be included in the non_identifying_attributes section
+      # for both supervisor and OpAMP extensions.
+      # Example:
+      #   customAttributes:
+      #     environment: "production"
+      #     team: "platform"
+      customAttributes: {}
+      supervisor:
+        enabled: false
     logsCollection:
       enabled: true
+      includeCollectorLogs: true
+      storeCheckpoints: true
+      maxRecombineLogSize: 1048576
+      # The maximum number of consecutive entries that will be combined into a single entry before the match occurs
+      maxUnmatchedBatchSize: 1
+      # The maximum number of consecutive entries that will be combined into a single entry.
+      maxBatchSize: 1000
+      extraFilelogOperators: []
+      # - type: recombine
+      #   combine_field: body
+      #   source_identifier: attributes["log.file.path"]
+      #   is_first_entry: body matches "^(YOUR-LOGS-REGEX)"
+
+      # Configure specific multline options for namespaces
+      # / pods / container names.
+      multilineConfigs: []
+      # multilineConfigs:
+      #   - namespaceName:
+      #       value: kube-system
+      #     podName:
+      #       value: app-.*
+      #       useRegex: true
+      #     containerName:
+      #       value: http
+      #     firstEntryRegex: ^[^\s].*
+      #     combineWith: ""
+
       reduceLogAttributes:
         enabled: true
-    kubeletMetrics:
+    kubernetesAttributes:
       enabled: true
-    collectorMetrics:
-      enabled: true
-    statsdReceiver:
-      enabled: true
-    hostMetrics:
-      enabled: true
-      process:
+      podUid:
+        enabled: false
+      podStartTime:
+        enabled: false
+      nodeFilter:
         enabled: true
     kubernetesExtraMetrics:
       enabled: true
-      scrapeAll: false
       perNode: true
-    reduceResourceAttributes:
+      scrapeAll: false
+    # Scrapes the kubelet's own /metrics endpoint on the local node.
+    kubeletPrometheusMetrics:
+      enabled: false
+      # When false, keeps a curated set of kubelet health metrics. When true, keeps all kubelet metrics.
+      scrapeAll: false
+      # When true, maps kubelet labels to OpenTelemetry semantic conventions (e.g. pod -> k8s.pod.name).
+      semconv: true
+    # deltaToCumulative:
+    #   enabled: false
+    hostMetrics:
       enabled: true
+      # Enables process metrics scraping.
+      # Disabled by default, requires privilleged mode
+      process:
+        enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+    kubeletMetrics:
+      enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+    spanMetrics:
+      enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+      metricsExpiration: 5m
+      # histogramBuckets:
+      #   [1ms, 4ms, 10ms, 20ms, 50ms, 100ms, 200ms, 500ms, 1s, 2s, 5s]
+      # Optional separate buckets for DB span metrics. Empty uses histogramBuckets above.
+      # dbMetrics:
+      #   histogramBuckets: [100us, 1ms, 2ms, 5ms, 10ms, 50ms, 100ms, 250ms]
+
+      histogramBuckets:
+        - 1ms
+        - 4ms
+        - 10ms
+        - 20ms
+        - 50ms
+        - 100ms
+        - 200ms
+        - 500ms
+        - 1s
+        - 2s
+        - 5s
+      transformStatements: []
+    transactions:
+      enabled: true
+      waitDuration: 30s
+    #   transformStatements:
+    #     - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil
+    #     - set(attributes["db.namespace"], attributes["server.address"]) where attributes["db.namespace"] == nil and attributes["db.system"] != nil
+    #     - set(attributes["db.namespace"], attributes["network.peer.name"]) where attributes["db.namespace"] == nil and attributes["db.system"] != nil
+    #     - set(attributes["db.namespace"], attributes["net.peer.name"]) where attributes["db.namespace"] == nil and attributes["db.system"] != nil
+    #     - set(attributes["db.namespace"], attributes["db.system"]) where attributes["db.namespace"] == nil
+    #     - set(attributes["db.operation.name"], attributes["db.operation"]) where attributes["db.operation.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.sql.table"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.cassandra.table"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.mongodb.collection"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.redis.database_index"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.elasticsearch.path_parts.index"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["db.cosmosdb.container"]) where attributes["db.collection.name"] == nil
+    #     - set(attributes["db.collection.name"], attributes["aws_dynamodb.table_names"]) where attributes["db.collection.name"] == nil
+    #   transformStatements:
+    #     - replace_pattern(attributes["db.query.text"], "\\d+", "?") # removes potential IDs for the attribute
+    #     - set(attributes["span.duration_ns"], span.end_time_unix_nano - span.start_time_unix_nano) # stores the span duration in ns in an attribute
+    # Configures collector to add service.version to spanMetrics dimensions
+    #   serviceVersion:
+    #     enabled: true
+    #   errorTracking:
+    #     enabled: true
+    #   dbMetrics:
+    #     enabled: true
+    #     serviceVersion:
+    #       enabled: true
+
+    # Configures the collector to export span metrics with different histogram bucket options
+    # for different applications. Applications are selected and routed to different pipelines
+    # using OTTL. For more information see https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/connector/routingconnector
+    # Make sure to not use with spanMetrics preset, which applies single spanmetrics connector to tracing pipeline.
+    spanMetricsMulti:
+      enabled: false
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+      metricsExpiration: 5m
+      # defaultHistogramBuckets:
+      #   [1ms, 4ms, 10ms, 20ms, 50ms, 100ms, 200ms, 500ms, 1s, 2s, 5s]
+      configs: []
+      #  - selector: route() where attributes["service.name"] == "one"
+      #    histogramBuckets: [1s, 2s]
+      #  - selector: route() where attributes["service.name"] == "two"
+      #    histogramBuckets: [5s, 10s]
+    # Sanitizes high-cardinality span names and selected span attributes before
+    # spans are converted into span metrics.
+    # Default: auto-enabled when spanMetrics or spanMetricsMulti is enabled.
+    # Set enabled=false to disable the feature completely.
+    # Set sanitize_url=false to keep URL-style span names and URL attributes unchanged.
+    # Set sanitizeDatabases=[] to keep database statements/commands unchanged.
+    spanMetricsSanitization:
+      enabled: auto
+      sanitize_url: true
+      sanitizeDatabases: [sql, redis, memcached, mongo, opensearch, es]
+      # Removes uids and other uneeded attributes from metric resources.
+      # This reduces target_info cardinality.
+      # reduceResourceAttributes:
+      #   enabled: false
+    # Configures Host Metrics receiver to collect Entity Events.
+
+    hostEntityEvents:
+      enabled: true
+    # Head sampling configuration for traces.
+    # When enabled, this creates a separate pipeline for sampled traces using probabilistic sampler.
+    # More info: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/probabilisticsamplerprocessor/README.md
+    # headSampling:
+    #   enabled: false
+    #   # Percentage of traces to sample (0-100)
+    #   percentage: 10
+    #   # Sampling mode - "proportional", "equalizing", "hash_seed"
+    #   mode: "proportional"
+
+    # Configures the collector to collect its own metrics using Prometheus receiver.
+    # Adds the prometheus receiver to the metrics pipeline with a scrape config
+    # targeting the collector's metrics endpoint.
+    # Also adds a transform processor to clean up metric names and attributes.
+    collectorMetrics:
+      enabled: true
+      # Scrape interval for collector metrics
+      scrapeInterval: "{{.Values.global.collectionInterval}}"
+    # Configures the collector to receive Jaeger data in all supported protocols.
+    # Adds the jaeger receiver to the traces pipeline with all protocols configured.
+    jaegerReceiver:
+      enabled: true
+    # Configures the collector to receive Zipkin data.
+    # Adds the zipkin receiver to the traces pipeline.
+    zipkinReceiver:
+      enabled: true
+    # Configures the collector to receive OTLP data.
+    # Adds the OTLP receiver to the traces, metrics, and logs pipelines.
+    otlpReceiver:
+      enabled: true
+    # Configures the agent to receive eBPF profiler profiles from the node-local
+    # profiler collector and enrich them with Kubernetes metadata before export.
+    profilesCollection:
+      enabled: false
+    profilesK8sAttributes:
+      enabled: true
+      serviceLabels:
+        - tag_name: service.label
+          key: app.kubernetes.io/name
+          from: pod
+      serviceAnnotations:
+        - tag_name: service.annotation
+          key: app.coralogix.com/service
+          from: pod
+    # Configures the collector to receive StatsD metrics.
+    # Adds the statsd receiver to the metrics pipeline.
+    statsdReceiver:
+      enabled: true
+    # Configures the collector to expose zPages for debugging.
+    # Reference: https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension
+    zpages:
+      enabled: true
+    # Configures the collector to expose pprof for profiling.
+    pprof:
+      enabled: true
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      # sendBatchSize: 1024
+      # sendBatchMaxSize: 2048
+      # timeout: "1s"
+    # Configures the collector to export data to Coralogix.
     coralogixExporter:
       enabled: true
       privateKey: ${env:CORALOGIX_PRIVATE_KEY}
       pipelines:
-      - logs
-      - metrics
-      - traces
-  targetAllocator:
-    enabled: false
-  distribution: eks
-  provider: aws
-opentelemetry-ebpf-profiler:
-  presets:
-    otlpExporter:
-      endpoint: ${env:K8S_NODE_IP}:4317
-      pipelines:
-      - profiles
-      tls:
-        insecure: true
-      enabled: true
+        - logs
+        - metrics
+        - traces
+    # Configures resource detection processors to add system and environment information.
+    # Also configures volumes and volume mounts for the collector.
     resourceDetection:
       enabled: true
+      deploymentEnvironmentName: aws-eks-lab
+    # Applies semantic convention transformations.
+    semconv:
+      enabled: true
+    # Backfill missing DB attributes before exporting spans and generating metrics.
+    dbSemConv:
+      enabled: true
+    reduceResourceAttributes:
+      enabled: true
+  config:
+    # extensions:
+    #   zpages:
+    #     endpoint: localhost:55679
+    # receivers:
+    #   statsd:
+    #     endpoint: ${env:MY_POD_IP}:8125
+    # processors: {}
+    # exporters: {}
+    service:
+      telemetry:
+        resource:
+          service.name: "opentelemetry-collector"
+          cx.agent.type: "agent"
+        logs:
+          level: "{{ .Values.global.logLevel }}"
+      extensions:
+        - health_check
+      pipelines:
+        metrics:
+          exporters: []
+          processors:
+            - memory_limiter
+            # receivers: []
+        traces:
+          exporters: []
+          processors:
+            - memory_limiter
+            # receivers: []
+        logs:
+          exporters: []
+          processors:
+            - memory_limiter
+            # receivers: []
+  tolerations:
+    - operator: Exists
+  startupProbe:
+    failureThreshold: 12
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    httpGet:
+      port: 13133
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 2G
+      # ports:
+      #   In order to enable podMonitor, following part must be enabled in order to expose the required port:
+      #   metrics:
+      #     enabled: true
+
+      # podMonitor:
+      #   enabled: true
+
+      # prometheusRule:
+      #   enabled: true
+      #   defaultRules:
+      #     enabled: true
+  distribution: eks
+  provider: aws
+opentelemetry-cluster-collector:
+  enabled: true
+  mode: deployment
+  # provider: aws  # Cloud provider (aws, gcp, azure, on-prem). Inferred from distribution if empty.
+  fullnameOverride: coralogix-opentelemetry-collector
+  clusterRole:
+    name: "coralogix-opentelemetry-collector"
+    create: true
+    clusterRoleBinding:
+      name: "coralogix-opentelemetry-collector"
+  # priorityClass:
+  #   # Specifies whether a priorityClass should be created.
+  #   create: false
+  #   # The name of the clusterRole to use.
+  #   # If not set a name is generated using the fullname template.
+  #   name: ""
+  #   # Sets the priority value of the priority class.
+  #   priorityValue: 1000000000
+  replicaCount: 1
+  presets:
     fleetManagement:
       enabled: true
+      agentType: "cluster-collector"
+      clusterName: "{{.Values.global.clusterName}}"
+      # Custom non-identifying attributes to add to the agent description.
+      # These attributes will be included in the non_identifying_attributes section
+      # for both supervisor and OpAMP extensions.
+      # Example:
+      #   customAttributes:
+      #     environment: "production"
+      #     team: "platform"
+      customAttributes: {}
       supervisor:
         enabled: false
-    ebpfProfiler:
-      samplesPerSecond: 20
+    clusterMetrics:
+      enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+      customMetrics:
+        enabled: true
+    kubernetesEvents:
+      enabled: true
+    kubernetesApiServerMetrics:
+      enabled: true
+      scrapeAll: false
+    otlpReceiver:
+      enabled: true
+    kubernetesAttributes:
+      enabled: true
+      podUid:
+        enabled: false
+      podStartTime:
+        enabled: false
+    # Configures resource detection processors to add system and environment information.
+    # Also configures volumes and volume mounts for the collector.
+    resourceDetection:
+      enabled: true
+      k8sNodeName:
+        enabled: false
+      deploymentEnvironmentName: aws-eks-lab
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    # Removes uids and other uneeded attributes from metric resources.
+    # This reduces target_info cardinality.
+    reduceResourceAttributes:
+      enabled: true
+    # Enables Kubernetes Resource collection for for resource catalog
+    kubernetesResources:
+      enabled: true
+      # OTTL filter statements for filtering out resources by name regex
+      filterStatements:
+      # Filter out pods given a regex. This example is for telemetrygen pods.
+      # - 'body["object"]["kind"] == "Pod" and IsMatch(body["object"]["metadata"]["name"], "telemetrygen.*")'
+      # - 'body["kind"] == "Pod" and IsMatch(body["metadata"]["name"], "telemetrygen.*")'
+    # Configures the collector to collect its own metrics using Prometheus receiver.
+    # Adds the prometheus receiver to the metrics pipeline with a scrape config
+    # targeting the collector's metrics endpoint.
+    # Also adds a transform processor to clean up metric names and attributes.
+    collectorMetrics:
+      enabled: true
+      # Scrape interval for collector metrics
+      scrapeInterval: "{{.Values.global.collectionInterval}}"
+    # Configures the collector to expose zPages for debugging.
+    # Reference: https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension
+    zpages:
+      enabled: true
+    # Configures the collector to expose pprof for profiling.
+    pprof:
+      enabled: true
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      # sendBatchSize: 1024
+      # sendBatchMaxSize: 2048
+      # timeout: "1s"
+    # Configures the collector to export data to Coralogix.
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+  # Extra config for the collector
+  # This is used to add extra receivers, processors, exporters, and connectors
+  # to the "logs", "metrics", and "traces" pipelines and other pipelines managed by the chart.
+  # Processors are added at the end of the pipeline before batching.
+  # You cannot use this to add new pipelines, instead use the
+  # config.service.pipelines field to add new pipelines.
+  extraConfig: {}
+  # extraConfig:
+  #   receivers:
+  #     otlp/3:
+  #       protocols:
+  #         grpc:
+  #           endpoint: ${env:MY_POD_IP}:4317
+  #         http:
+  #           endpoint: ${env:MY_POD_IP}:4318
+  #   processors:
+  #     batch: {}
+  #   exporters:
+  #     debug/2: {}
+  #   connectors:
+  #     spanmetrics/2:
+  #       metrics:
+  #         enabled: true
+  #   service:
+  #     pipelines:
+  #       logs:
+  #         receivers:
+  #         - otlp/3
+  #         processors:
+  #         - batch/2
+  #         exporters:
+  #         - debug/2
+  #       metrics:
+  #         receivers:
+  #         - otlp/3
+  #         - spanmetrics/2
+  config:
+    # extensions: {}
+    # receivers: {}
+    # processors: {}
+    # exporters: {}
+    service:
+      telemetry:
+        resource:
+          service.name: "opentelemetry-collector"
+          cx.agent.type: "cluster-collector"
+        logs:
+          level: "{{ .Values.global.logLevel }}"
+      extensions:
+        - health_check
+      pipelines:
+        logs:
+          exporters: []
+          processors:
+            - memory_limiter
+            # receivers: []
+        metrics:
+          exporters: []
+          processors:
+            - memory_limiter
+            # receivers: []
+  # Centralized collector: schedule only on healthy, untainted nodes.
+  # Override to add tolerations for dedicated node pools if required.
+  tolerations: []
+  startupProbe:
+    failureThreshold: 12
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    httpGet:
+      port: 13133
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1
+      memory: 2G
+  ports:
+    otlp-http:
+      enabled: false
+    # In order to enable serviceMonitor, following part must be enabled in order to expose the required port:
+    # metrics:
+    #   enabled: true
+  # serviceMonitor:
+  #   enabled: true
+
+  # prometheusRule:
+  #   enabled: true
+  #   defaultRules:
+  #     enabled: true
+
+  distribution: eks
+  provider: aws
+opentelemetry-agent-windows:
   enabled: false
+  presets:
+    # Backfill missing DB attributes on application traces received by the Windows agent.
+    dbSemConv:
+      enabled: true
+opentelemetry-gateway:
+  enabled: false
+  mode: deployment
+  # provider: aws  # Cloud provider (aws, gcp, azure, on-prem). Inferred from distribution if empty.
+  fullnameOverride: coralogix-opentelemetry-gateway
+  service:
+    enabled: true
+    clusterIP: "None"
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+  # Extra config for the collector
+  # This is used to add extra receivers, processors, exporters, and connectors
+  # to the "logs", "metrics", and "traces" pipelines and other pipelines managed by the chart.
+  # Processors are added at the end of the pipeline before batching.
+  # You cannot use this to add new pipelines, instead use the
+  # config.service.pipelines field to add new pipelines.
+  extraConfig: {}
+  # extraConfig:
+  #   receivers:
+  #     otlp/3:
+  #       protocols:
+  #         grpc:
+  #           endpoint: ${env:MY_POD_IP}:4317
+  #         http:
+  #           endpoint: ${env:MY_POD_IP}:4318
+  #   processors:
+  #     batch: {}
+  #   exporters:
+  #     debug/2: {}
+  #   connectors:
+  #     spanmetrics/2:
+  #       metrics:
+  #         enabled: true
+  #   service:
+  #     pipelines:
+  #       logs:
+  #         receivers:
+  #         - otlp/3
+  #         processors:
+  #         - batch/2
+  #         exporters:
+  #         - debug/2
+  #       metrics:
+  #         receivers:
+  #         - otlp/3
+  #         - spanmetrics/2
+
+  presets:
+    fleetManagement:
+      enabled: true
+      agentType: "gateway"
+      clusterName: "{{.Values.global.clusterName}}"
+      # Custom non-identifying attributes to add to the agent description.
+      # These attributes will be included in the non_identifying_attributes section
+      # for both supervisor and OpAMP extensions.
+      # Example:
+      #   customAttributes:
+      #     environment: "production"
+      #     team: "platform"
+      customAttributes: {}
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    # Configures the collector to collect its own metrics using Prometheus receiver.
+    # Adds the prometheus receiver to the metrics pipeline with a scrape config
+    # targeting the collector's metrics endpoint.
+    # Also adds a transform processor to clean up metric names and attributes.
+    collectorMetrics:
+      enabled: true
+      # Scrape interval for collector metrics
+      scrapeInterval: "{{.Values.global.collectionInterval}}"
+    # Configures resource detection processors to add system and environment information.
+    # Also configures volumes and volume mounts for the collector.
+    resourceDetection:
+      enabled: true
+      pipeline: "metrics"
+    # Configures the collector to expose zPages for debugging.
+    # Reference: https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension
+    zpages:
+      enabled: true
+    # Configures the collector to expose pprof for profiling.
+    pprof:
+      enabled: true
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      # sendBatchSize: 1024
+      # sendBatchMaxSize: 2048
+      # timeout: "1s"
+    # Configures the collector to export data to Coralogix.
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    # Configures the collector to receive OTLP data.
+    # Adds the OTLP receiver to the traces, metrics, and logs pipelines.
+    otlpReceiver:
+      enabled: true
+    k8sResourceAttributes:
+      enabled: true
+      agentType: "gateway"
+  config:
+    # extensions: {}
+    # exporters: {}
+    # processors: {}
+    # receivers: {}
+    service:
+      telemetry:
+        logs:
+          level: "{{ .Values.global.logLevel }}"
+      pipelines:
+        metrics:
+          exporters: []
+          processors:
+            - memory_limiter
+        traces:
+          exporters: []
+          processors:
+            - memory_limiter
+            - tail_sampling
+          # receivers: []
+  # Centralized gateway: schedule only on healthy, untainted nodes.
+  # Override to add tolerations for dedicated node pools if required.
+  tolerations: []
+  ports:
+    otlp-http:
+      enabled: false
+opentelemetry-receiver:
+  enabled: false
+  mode: deployment
+  # provider: aws  # Cloud provider (aws, gcp, azure, on-prem). Inferred from distribution if empty.
+  fullnameOverride: coralogix-opentelemetry-receiver
+  service:
+    enabled: true
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+  presets:
+    fleetManagement:
+      enabled: true
+      agentType: "receiver"
+      clusterName: "{{.Values.global.clusterName}}"
+      # Custom non-identifying attributes to add to the agent description.
+      # These attributes will be included in the non_identifying_attributes section
+      # for both supervisor and OpAMP extensions.
+      # Example:
+      #   customAttributes:
+      #     environment: "production"
+      #     team: "platform"
+      customAttributes: {}
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    # Configures the collector to collect its own metrics using Prometheus receiver.
+    # Adds the prometheus receiver to the metrics pipeline with a scrape config
+    # targeting the collector's metrics endpoint.
+    # Also adds a transform processor to clean up metric names and attributes.
+    collectorMetrics:
+      enabled: true
+      # Scrape interval for collector metrics
+      scrapeInterval: "{{.Values.global.collectionInterval}}"
+      pipeline: "none"
+    k8sResourceAttributes:
+      enabled: true
+      agentType: "receiver"
+    resourceDetection:
+      enabled: true
+      pipeline: "none"
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      # sendBatchSize: 1024
+      # sendBatchMaxSize: 2048
+      # timeout: "1s"
+    # Configures the collector to expose zPages for debugging.
+    # Reference: https://github.com/open-telemetry/opentelemetry-collector/tree/main/extension/zpagesextension
+    zpages:
+      enabled: true
+    # Configures the collector to expose pprof for profiling.
+    pprof:
+      enabled: true
+    # Configures the collector to receive OTLP data.
+    # Adds the OTLP receiver to the traces, metrics, and logs pipelines.
+    otlpReceiver:
+      enabled: true
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+      pipelines: ["none"]
+  config:
+    # exporters: {}
+    # processors: {}
+    # receivers: {}
+    service:
+      telemetry:
+        resource:
+          service.name: "opentelemetry-collector"
+          cx.agent.type: "receiver"
+        logs:
+          level: "{{ .Values.global.logLevel }}"
+      pipelines:
+        metrics/self_monitoring:
+          exporters:
+            - coralogix
+          processors:
+            - memory_limiter
+            - resourcedetection/env
+            - resourcedetection/region
+            - batch
+          receivers:
+            - prometheus
+        metrics:
+          exporters:
+            - coralogix
+          processors:
+            - memory_limiter
+            # receivers: []
+        traces:
+          exporters:
+            - loadbalancing
+          processors:
+            - memory_limiter
+            # receivers: []
+        logs:
+          exporters:
+            - coralogix
+          processors:
+            - memory_limiter
+          # receivers: []
+  # Centralized receiver: schedule only on healthy, untainted nodes.
+  # Override to add tolerations for dedicated node pools if required.
+  tolerations: []
+  ports:
+    otlp-http:
+      enabled: false
+coralogix-ebpf-profiler:
+  enabled: false
+  profiling:
+    profiling_otel_agent:
+      samples_per_second: 20
+      reporter_interval: 5s
+      debug: false
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  k8s_watcher:
+    replicaCount: 1
+    debug: false
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+opentelemetry-ebpf-profiler:
+  enabled: false
+  mode: daemonset
+  fullnameOverride: coralogix-opentelemetry-ebpf-profiler
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8888"
+  ports:
+    otlp:
+      enabled: false
+    otlp-http:
+      enabled: false
+    metrics:
+      enabled: true
+  presets:
+    resourceDetection:
+      enabled: true
+    ebpfProfiler:
+      enabled: true
+      samplesPerSecond: 20
+    fleetManagement:
+      enabled: true
+      agentType: "ebpf-profiler"
+      clusterName: "{{.Values.global.clusterName}}"
+      supervisor:
+        enabled: false
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    otlpExporter:
+      enabled: true
+      endpoint: ${env:K8S_NODE_IP}:4317
+      pipelines: [profiles]
+      tls:
+        insecure: true
+    otlpReceiver:
+      enabled: false
+    collectorMetrics:
+      enabled: true
+      disablePrometheusReceiver: true
+  config:
+    service:
+      telemetry:
+        resource:
+          service.name: "opentelemetry-collector"
+          cx.agent.type: "ebpf-profiler"
+        logs:
+          level: "{{ .Values.global.logLevel }}"
 opentelemetry-ebpf-instrumentation:
   enabled: true
+  # OBI preallocates its BPF maps at startup: a measured 338Mi across 204 maps,
+  # charged to the container cgroup on every node whether idle or not. The
+  # request must sit above that floor. Beyond it, memory scales with the number
+  # of processes and TCP connections tracked on the node, not with cluster size.
+  # Measured across Coralogix clusters: p50 566Mi, p90 934Mi, p95 of per-node
+  # peak 1.4Gi.
+  # No CPU limit: OBI is event driven off a BPF ring buffer, so throttling
+  # stalls the drain and silently drops events.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  k8sCache:
+    replicas: 2
+    # Small and stable: 12-22Mi typical, 40Mi peak, under 0.02 cores. No memory
+    # limit, as the footprint grows with the number of Kubernetes objects and
+    # has only been measured on small clusters.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+#  priorityClass:
+#    create: false
+#    name: ""
+#    value: 1000000000
+#  tolerations: []
+
 coralogix-operator:
   enabled: false
+#  secret:
+#    create: true
+#    secretKeyReference: {}
+#    data:
+#      apiKey: ""
+#  deployment:
+#    replicas: 1
+#  coralogixOperator:
+#    region: ""
+#    domain: ""
+#    labelSelector: {}
+#    namespaceSelector: {}
+
+# OpenTelemetry Agent for EKS Fargate
+# Collects logs and metrics from Fargate pods
+opentelemetry-agent-eks-fargate:
+  enabled: false
+  fullnameOverride: "otel-agent-eks-fargate"
+  mode: statefulset
+  replicaCount: 1
+  networkMode: "ipv4"
+  distribution: "eks/fargate"
+  presets:
+    # Backfill missing DB attributes on application traces received by the Fargate agent.
+    dbSemConv:
+      enabled: true
+    # Configures metadata collection for EKS Fargate
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    # Configures the collector to export data to Coralogix.
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      timeout: "60s"
+    # Configures EKS Fargate specific collection
+    eksFargate:
+      monitoringCollector: false
+      kubeletStats:
+        collectionInterval: "{{.Values.global.collectionInterval}}"
+      initContainer:
+        enabled: true
+        image:
+          repository: "public.ecr.aws/aws-cli/aws-cli"
+          tag: "2.28.17"
+    # Configures Kubernetes attributes processor
+    kubernetesAttributes:
+      enabled: true
+    # Configures the collector to receive OTLP data.
+    # Adds the OTLP receiver to the traces, metrics, and logs pipelines.
+    otlpReceiver:
+      enabled: true
+      maxRecvMsgSizeMiB: 20
+    # Configures resource detection processors to add system and environment information.
+    # Also configures volumes and volume mounts for the collector.
+    resourceDetection:
+      enabled: true
+      dbusMachineId:
+        enabled: false
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+  ports:
+    metrics:
+      enabled: true
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 1
+      memory: 2Gi
+  podSecurityContext:
+    fsGroup: 65534
+# OpenTelemetry Agent for EKS Fargate Monitoring
+# Separate collector deployment for monitoring metrics collection
+opentelemetry-agent-eks-fargate-monitoring:
+  enabled: false
+  fullnameOverride: "otel-agent-eks-fargate-monitoring"
+  mode: deployment
+  replicaCount: 1
+  distribution: "eks/fargate"
+  config:
+    exporters: {}
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
+      memory_ballast: {}
+    receivers: {}
+    processors:
+      memory_limiter: null
+    service:
+      telemetry:
+        logs:
+          encoding: json
+      extensions:
+        - health_check
+  presets:
+    # Configures metadata collection for EKS Fargate monitoring
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    # Configures the collector to export data to Coralogix.
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    # Configuration for the batch processor.
+    # Adds the batch processor to the logs, metrics, and traces pipelines.
+    # See https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/batchprocessor for details on the processor.
+    batch:
+      enabled: true
+      timeout: "60s"
+    # Configures EKS Fargate monitoring collector
+    eksFargate:
+      monitoringCollector: true
+      kubeletStats:
+        collectionInterval: "{{.Values.global.collectionInterval}}"
+    # Configures Kubernetes attributes processor
+    kubernetesAttributes:
+      enabled: false
+    # Configures the collector to receive OTLP data.
+    # Adds the OTLP receiver to the traces, metrics, and logs pipelines.
+    otlpReceiver:
+      enabled: true
+      maxRecvMsgSizeMiB: 20
+    # Configures resource detection processors to add system and environment information.
+    # Also configures volumes and volume mounts for the collector.
+    resourceDetection:
+      enabled: true
+      dbusMachineId:
+        enabled: false
+  extraEnvs:
+    - name: CORALOGIX_PRIVATE_KEY
+      valueFrom:
+        secretKeyRef:
+          name: coralogix-keys
+          key: PRIVATE_KEY
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 1
+      memory: 2Gi
+  podSecurityContext:
+    fsGroup: 65534
+  ports:
+    metrics:
+      enabled: true
