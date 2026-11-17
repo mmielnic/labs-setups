@@ -1,0 +1,17 @@
+# Temporary workaround for duplicated _total suffixes.
+# Introduced with Coralogix Helm chart 0.0.377.
+# Review necessity before future chart upgrades.
+
+opentelemetry-agent:
+  extraConfig:
+    processors:
+      transform/dedupe_total:
+        error_mode: ignore
+        metric_statements:
+          - statements:
+              - replace_pattern(metric.name, "_total$", "")
+    service:
+      pipelines:
+        metrics:
+          processors:
+            - transform/dedupe_total
