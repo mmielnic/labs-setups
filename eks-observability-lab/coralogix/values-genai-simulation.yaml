@@ -1,0 +1,35 @@
+opentelemetry-agent:
+  extraConfig:
+    processors:
+      transform/genai_simulation:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            conditions:
+              - >
+                resource.attributes["k8s.namespace.name"] == "demo"
+                and resource.attributes["service.name"] == "agent"
+                and span.attributes["gen_ai.operation.name"] == "chat"
+                and span.attributes["gen_ai.request.model"] == "azure/gpt-5.5"
+                and span.attributes["gen_ai.usage.input_tokens"] == nil
+                and span.attributes["gen_ai.usage.output_tokens"] == nil
+                and span.attributes["gen_ai.input.messages"] != nil
+                and span.attributes["gen_ai.output.messages"] != nil
+            statements:
+              - set(span.cache["input_length"], Len(String(span.attributes["gen_ai.input.messages"])))
+
+              - set(span.cache["input_length"], span.cache["input_length"] + Len(String(span.attributes["gen_ai.system_instructions"]))) where span.attributes["gen_ai.system_instructions"] != nil
+
+              - set(span.cache["input_length"], span.cache["input_length"] + Len(String(span.attributes["gen_ai.tool.definitions"]))) where span.attributes["gen_ai.tool.definitions"] != nil
+
+              - set(span.cache["output_length"], Len(String(span.attributes["gen_ai.output.messages"])))
+
+              - set(span.attributes["gen_ai.usage.input_tokens"], Int(span.cache["input_length"] / 4))
+
+              - set(span.attributes["gen_ai.usage.output_tokens"], Int(span.cache["output_length"] / 4))
+
+    service:
+      pipelines:
+        traces:
+          processors:
+            - transform/genai_simulation
