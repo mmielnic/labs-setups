@@ -1,0 +1,18 @@
+[otel]
+environment = "lab"
+log_user_prompt = false
+
+# Logs
+[otel.exporter.otlp-http]
+endpoint = "http://127.0.0.1:4319/v1/logs"
+protocol = "binary"
+
+# Metrics
+[otel.metrics_exporter.otlp-http]
+endpoint = "http://127.0.0.1:4319/v1/metrics"
+protocol = "binary"
+
+# Traces
+[otel.trace_exporter.otlp-http]
+endpoint = "http://127.0.0.1:4319/v1/traces"
+protocol = "binary"

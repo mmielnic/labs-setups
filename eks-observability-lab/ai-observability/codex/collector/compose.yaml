@@ -1,0 +1,20 @@
+name: codex-collector
+
+services:
+  codex-otel-collector:
+    image: otel/opentelemetry-collector:0.165.0
+    container_name: codex-otel-collector
+    restart: unless-stopped
+    command:
+      - "--config=/etc/otelcol/config.yaml"
+    env_file:
+      - ../.env
+    volumes:
+      - ./config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4319:4318"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
