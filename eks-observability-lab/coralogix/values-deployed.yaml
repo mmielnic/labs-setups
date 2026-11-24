@@ -1,0 +1,782 @@
+coralogix-ebpf-profiler:
+  enabled: false
+  k8s_watcher:
+    debug: false
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  profiling:
+    profiling_otel_agent:
+      debug: false
+      reporter_interval: 5s
+      samples_per_second: 20
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+coralogix-operator:
+  enabled: false
+distribution: ""
+global:
+  clusterName: msm-tam-lab-cluster
+  collectionInterval: 30s
+  defaultApplicationName: otel
+  defaultSubsystemName: integration
+  deploymentEnvironmentName: aws-eks-lab
+  domain: cx498.coralogix.com
+  extensions:
+    kubernetesDashboard:
+      enabled: true
+  logLevel: info
+  version: 0.0.377
+opentelemetry-agent:
+  clusterRole:
+    clusterRoleBinding:
+      name: coralogix-opentelemetry-agent
+    name: coralogix-opentelemetry-agent
+  config:
+    service:
+      extensions:
+      - health_check
+      pipelines:
+        logs:
+          exporters: []
+          processors:
+          - memory_limiter
+        metrics:
+          exporters: []
+          processors:
+          - memory_limiter
+        traces:
+          exporters: []
+          processors:
+          - memory_limiter
+      telemetry:
+        logs:
+          level: '{{ .Values.global.logLevel }}'
+        resource:
+          cx.agent.type: agent
+          service.name: opentelemetry-collector
+  distribution: eks
+  dnsPolicy: ClusterFirstWithHostNet
+  enabled: true
+  extraConfig:
+    processors:
+      transform/dedupe_total:
+        error_mode: ignore
+        metric_statements:
+        - statements:
+          - replace_pattern(metric.name, "_total$", "")
+      transform/genai_simulation:
+        error_mode: ignore
+        trace_statements:
+        - conditions:
+          - |
+            resource.attributes["k8s.namespace.name"] == "demo" and resource.attributes["service.name"] == "agent" and span.attributes["gen_ai.operation.name"] == "chat" and span.attributes["gen_ai.request.model"] == "azure/gpt-5.5" and span.attributes["gen_ai.usage.input_tokens"] == nil and span.attributes["gen_ai.usage.output_tokens"] == nil and span.attributes["gen_ai.input.messages"] != nil and span.attributes["gen_ai.output.messages"] != nil
+          context: span
+          statements:
+          - set(span.cache["input_length"], Len(String(span.attributes["gen_ai.input.messages"])))
+          - set(span.cache["input_length"], span.cache["input_length"] + Len(String(span.attributes["gen_ai.system_instructions"])))
+            where span.attributes["gen_ai.system_instructions"] != nil
+          - set(span.cache["input_length"], span.cache["input_length"] + Len(String(span.attributes["gen_ai.tool.definitions"])))
+            where span.attributes["gen_ai.tool.definitions"] != nil
+          - set(span.cache["output_length"], Len(String(span.attributes["gen_ai.output.messages"])))
+          - set(span.attributes["gen_ai.usage.input_tokens"], Int(span.cache["input_length"]
+            / 4))
+          - set(span.attributes["gen_ai.usage.output_tokens"], Int(span.cache["output_length"]
+            / 4))
+    service:
+      pipelines:
+        metrics:
+          processors:
+          - transform/dedupe_total
+        traces:
+          processors:
+          - transform/genai_simulation
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  fullnameOverride: coralogix-opentelemetry
+  hostNetwork: true
+  mode: daemonset
+  presets:
+    batch:
+      enabled: true
+    collectorMetrics:
+      enabled: true
+      scrapeInterval: '{{.Values.global.collectionInterval}}'
+    coralogixExporter:
+      enabled: true
+      pipelines:
+      - logs
+      - metrics
+      - traces
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    dbSemConv:
+      enabled: true
+    fleetManagement:
+      agentType: agent
+      clusterName: '{{.Values.global.clusterName}}'
+      customAttributes: {}
+      enabled: true
+      supervisor:
+        enabled: true
+        minimalCollectorConfig: false
+    hostEntityEvents:
+      enabled: true
+    hostMetrics:
+      collectionInterval: '{{.Values.global.collectionInterval}}'
+      enabled: true
+      process:
+        enabled: true
+    jaegerReceiver:
+      enabled: true
+    k8sResourceAttributes:
+      agentType: agent
+      enabled: true
+    kubeletMetrics:
+      collectionInterval: '{{.Values.global.collectionInterval}}'
+      enabled: true
+    kubeletPrometheusMetrics:
+      enabled: false
+      scrapeAll: false
+      semconv: true
+    kubernetesAttributes:
+      enabled: true
+      nodeFilter:
+        enabled: true
+      podStartTime:
+        enabled: false
+      podUid:
+        enabled: false
+    kubernetesExtraMetrics:
+      enabled: true
+      perNode: true
+      scrapeAll: false
+    logsCollection:
+      enabled: true
+      extraFilelogOperators: []
+      includeCollectorLogs: true
+      maxBatchSize: 1000
+      maxRecombineLogSize: 1048576
+      maxUnmatchedBatchSize: 1
+      multilineConfigs: []
+      reduceLogAttributes:
+        enabled: true
+      storeCheckpoints: true
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+    pprof:
+      enabled: true
+    profilesCollection:
+      enabled: false
+    profilesK8sAttributes:
+      enabled: true
+      serviceAnnotations:
+      - from: pod
+        key: app.coralogix.com/service
+        tag_name: service.annotation
+      serviceLabels:
+      - from: pod
+        key: app.kubernetes.io/name
+        tag_name: service.label
+    reduceResourceAttributes:
+      enabled: true
+    resourceDetection:
+      deploymentEnvironmentName: aws-eks-lab
+      enabled: true
+    semconv:
+      enabled: true
+    spanMetrics:
+      collectionInterval: '{{.Values.global.collectionInterval}}'
+      enabled: true
+      histogramBuckets:
+      - 1ms
+      - 4ms
+      - 10ms
+      - 20ms
+      - 50ms
+      - 100ms
+      - 200ms
+      - 500ms
+      - 1s
+      - 2s
+      - 5s
+      metricsExpiration: 5m
+      transformStatements: []
+    spanMetricsMulti:
+      collectionInterval: '{{.Values.global.collectionInterval}}'
+      configs: []
+      enabled: false
+      metricsExpiration: 5m
+    spanMetricsSanitization:
+      enabled: auto
+      sanitize_url: true
+      sanitizeDatabases:
+      - sql
+      - redis
+      - memcached
+      - mongo
+      - opensearch
+      - es
+    statsdReceiver:
+      enabled: true
+    transactions:
+      enabled: true
+      waitDuration: 30s
+    zipkinReceiver:
+      enabled: true
+    zpages:
+      enabled: true
+  provider: aws
+  resources:
+    limits:
+      cpu: 1
+      memory: 2G
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  startupProbe:
+    failureThreshold: 12
+    httpGet:
+      port: 13133
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  targetAllocator:
+    allocationStrategy: per-node
+    enabled: false
+    image:
+      repository: ghcr.io/open-telemetry/opentelemetry-operator/target-allocator
+      tag: v0.162.0
+    prometheusCR:
+      enabled: true
+      scrapeInterval: 30s
+    replicas: 1
+  tolerations:
+  - operator: Exists
+opentelemetry-agent-eks-fargate:
+  distribution: eks/fargate
+  enabled: false
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  - name: K8S_NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  fullnameOverride: otel-agent-eks-fargate
+  mode: statefulset
+  networkMode: ipv4
+  podSecurityContext:
+    fsGroup: 65534
+  ports:
+    metrics:
+      enabled: true
+  presets:
+    batch:
+      enabled: true
+      timeout: 60s
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    dbSemConv:
+      enabled: true
+    eksFargate:
+      initContainer:
+        enabled: true
+        image:
+          repository: public.ecr.aws/aws-cli/aws-cli
+          tag: 2.28.17
+      kubeletStats:
+        collectionInterval: '{{.Values.global.collectionInterval}}'
+      monitoringCollector: false
+    kubernetesAttributes:
+      enabled: true
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+      maxRecvMsgSizeMiB: 20
+    resourceDetection:
+      dbusMachineId:
+        enabled: false
+      enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 1
+      memory: 2Gi
+opentelemetry-agent-eks-fargate-monitoring:
+  config:
+    exporters: {}
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
+      memory_ballast: {}
+    processors:
+      memory_limiter: null
+    receivers: {}
+    service:
+      extensions:
+      - health_check
+      telemetry:
+        logs:
+          encoding: json
+  distribution: eks/fargate
+  enabled: false
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  - name: K8S_NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  fullnameOverride: otel-agent-eks-fargate-monitoring
+  mode: deployment
+  podSecurityContext:
+    fsGroup: 65534
+  ports:
+    metrics:
+      enabled: true
+  presets:
+    batch:
+      enabled: true
+      timeout: 60s
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    eksFargate:
+      kubeletStats:
+        collectionInterval: '{{.Values.global.collectionInterval}}'
+      monitoringCollector: true
+    kubernetesAttributes:
+      enabled: false
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+      maxRecvMsgSizeMiB: 20
+    resourceDetection:
+      dbusMachineId:
+        enabled: false
+      enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 1
+      memory: 2Gi
+    requests:
+      cpu: 1
+      memory: 2Gi
+opentelemetry-agent-windows:
+  enabled: false
+  presets:
+    dbSemConv:
+      enabled: true
+opentelemetry-autoinstrumentation:
+  admissionWebhooks:
+    certManager:
+      enabled: false
+  crds:
+    create: false
+  enabled: false
+  manager:
+    config:
+      enable-instrumentation-crds: false
+      enable-nginx-auto-instrumentation: true
+      instrumentations:
+        spec:
+          apacheHttpd:
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-apache-httpd:1.0.4
+          dotnet:
+            env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://$(OTEL_NODE_IP):4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-dotnet:1.17.0
+          env:
+          - name: OTEL_TRACES_SAMPLER
+            value: always_on
+          - name: OTEL_LOGS_EXPORTER
+            value: none
+          exporter:
+            endpoint: http://$(OTEL_NODE_IP):4317
+          java:
+            env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://$(OTEL_NODE_IP):4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:2.32.0
+          nginx:
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-apache-httpd:1.0.4
+          propagators:
+          - tracecontext
+          - baggage
+          python:
+            env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://$(OTEL_NODE_IP):4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:0.66b1
+          sampler:
+            argument: "1.0"
+            type: parentbased_traceidratio
+    ignoreMissingCollectorCRDs: true
+  nameOverride: otel-autoinstrumentation
+  nodeSelector:
+    kubernetes.io/os: linux
+opentelemetry-cluster-collector:
+  clusterRole:
+    clusterRoleBinding:
+      name: coralogix-opentelemetry-collector
+    create: true
+    name: coralogix-opentelemetry-collector
+  config:
+    service:
+      extensions:
+      - health_check
+      pipelines:
+        logs:
+          exporters: []
+          processors:
+          - memory_limiter
+        metrics:
+          exporters: []
+          processors:
+          - memory_limiter
+      telemetry:
+        logs:
+          level: '{{ .Values.global.logLevel }}'
+        resource:
+          cx.agent.type: cluster-collector
+          service.name: opentelemetry-collector
+  distribution: eks
+  enabled: true
+  extraConfig: {}
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  fullnameOverride: coralogix-opentelemetry-collector
+  mode: deployment
+  ports:
+    otlp-http:
+      enabled: false
+  presets:
+    batch:
+      enabled: true
+    clusterMetrics:
+      collectionInterval: '{{.Values.global.collectionInterval}}'
+      customMetrics:
+        enabled: true
+      enabled: true
+    collectorMetrics:
+      enabled: true
+      scrapeInterval: '{{.Values.global.collectionInterval}}'
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    fleetManagement:
+      agentType: cluster-collector
+      clusterName: '{{.Values.global.clusterName}}'
+      customAttributes: {}
+      enabled: true
+      supervisor:
+        enabled: false
+    kubernetesApiServerMetrics:
+      enabled: true
+      scrapeAll: false
+    kubernetesAttributes:
+      enabled: true
+      podStartTime:
+        enabled: false
+      podUid:
+        enabled: false
+    kubernetesEvents:
+      enabled: true
+    kubernetesResources:
+      enabled: true
+      filterStatements: null
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+    pprof:
+      enabled: true
+    reduceResourceAttributes:
+      enabled: true
+    resourceDetection:
+      deploymentEnvironmentName: aws-eks-lab
+      enabled: true
+      k8sNodeName:
+        enabled: false
+    zpages:
+      enabled: true
+  provider: aws
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 1
+      memory: 2G
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  startupProbe:
+    failureThreshold: 12
+    httpGet:
+      port: 13133
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  tolerations: []
+opentelemetry-ebpf-instrumentation:
+  enabled: true
+  k8sCache:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+  resources:
+    limits:
+      memory: 2Gi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+opentelemetry-ebpf-profiler:
+  config:
+    service:
+      telemetry:
+        logs:
+          level: '{{ .Values.global.logLevel }}'
+        resource:
+          cx.agent.type: ebpf-profiler
+          service.name: opentelemetry-collector
+  enabled: false
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  fullnameOverride: coralogix-opentelemetry-ebpf-profiler
+  mode: daemonset
+  podAnnotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8888"
+    prometheus.io/scrape: "true"
+  ports:
+    metrics:
+      enabled: true
+    otlp:
+      enabled: false
+    otlp-http:
+      enabled: false
+  presets:
+    collectorMetrics:
+      disablePrometheusReceiver: true
+      enabled: true
+    ebpfProfiler:
+      enabled: true
+      samplesPerSecond: 20
+    fleetManagement:
+      agentType: ebpf-profiler
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      supervisor:
+        enabled: false
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpExporter:
+      enabled: true
+      endpoint: ${env:K8S_NODE_IP}:4317
+      pipelines:
+      - profiles
+      tls:
+        insecure: true
+    otlpReceiver:
+      enabled: false
+    resourceDetection:
+      enabled: true
+opentelemetry-gateway:
+  config:
+    service:
+      pipelines:
+        metrics:
+          exporters: []
+          processors:
+          - memory_limiter
+        traces:
+          exporters: []
+          processors:
+          - memory_limiter
+          - tail_sampling
+      telemetry:
+        logs:
+          level: '{{ .Values.global.logLevel }}'
+  enabled: false
+  extraConfig: {}
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  fullnameOverride: coralogix-opentelemetry-gateway
+  mode: deployment
+  ports:
+    otlp-http:
+      enabled: false
+  presets:
+    batch:
+      enabled: true
+    collectorMetrics:
+      enabled: true
+      scrapeInterval: '{{.Values.global.collectionInterval}}'
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    fleetManagement:
+      agentType: gateway
+      clusterName: '{{.Values.global.clusterName}}'
+      customAttributes: {}
+      enabled: true
+    k8sResourceAttributes:
+      agentType: gateway
+      enabled: true
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+    pprof:
+      enabled: true
+    resourceDetection:
+      enabled: true
+      pipeline: metrics
+    zpages:
+      enabled: true
+  service:
+    clusterIP: None
+    enabled: true
+  tolerations: []
+opentelemetry-receiver:
+  config:
+    service:
+      pipelines:
+        logs:
+          exporters:
+          - coralogix
+          processors:
+          - memory_limiter
+        metrics:
+          exporters:
+          - coralogix
+          processors:
+          - memory_limiter
+        metrics/self_monitoring:
+          exporters:
+          - coralogix
+          processors:
+          - memory_limiter
+          - resourcedetection/env
+          - resourcedetection/region
+          - batch
+          receivers:
+          - prometheus
+        traces:
+          exporters:
+          - loadbalancing
+          processors:
+          - memory_limiter
+      telemetry:
+        logs:
+          level: '{{ .Values.global.logLevel }}'
+        resource:
+          cx.agent.type: receiver
+          service.name: opentelemetry-collector
+  enabled: false
+  extraEnvs:
+  - name: CORALOGIX_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        key: PRIVATE_KEY
+        name: coralogix-keys
+  fullnameOverride: coralogix-opentelemetry-receiver
+  mode: deployment
+  ports:
+    otlp-http:
+      enabled: false
+  presets:
+    batch:
+      enabled: true
+    collectorMetrics:
+      enabled: true
+      pipeline: none
+      scrapeInterval: '{{.Values.global.collectionInterval}}'
+    coralogixExporter:
+      enabled: true
+      pipelines:
+      - none
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+    fleetManagement:
+      agentType: receiver
+      clusterName: '{{.Values.global.clusterName}}'
+      customAttributes: {}
+      enabled: true
+    k8sResourceAttributes:
+      agentType: receiver
+      enabled: true
+    metadata:
+      clusterName: '{{.Values.global.clusterName}}'
+      enabled: true
+      integrationName: coralogix-integration-helm
+    otlpReceiver:
+      enabled: true
+    pprof:
+      enabled: true
+    resourceDetection:
+      enabled: true
+      pipeline: none
+    zpages:
+      enabled: true
+  service:
+    enabled: true
+  tolerations: []
