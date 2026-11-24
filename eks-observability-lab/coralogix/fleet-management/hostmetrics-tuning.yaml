@@ -1,0 +1,3 @@
+receivers:
+  hostmetrics:
+    collection_interval: 60s

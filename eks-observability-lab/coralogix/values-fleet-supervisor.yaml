@@ -1,0 +1,7 @@
+opentelemetry-agent:
+  presets:
+    fleetManagement:
+      enabled: true
+      supervisor:
+        enabled: true
+        minimalCollectorConfig: false
